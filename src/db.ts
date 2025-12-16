@@ -259,6 +259,121 @@ export function isBotOnline(maxHeartbeatAgeSeconds: number = 60): boolean {
     return (now - heartbeat) < maxHeartbeatAgeSeconds;
 }
 
+/**
+ * Get heartbeat age in seconds.
+ */
+export function getHeartbeatAge(): number {
+    const heartbeat = getHeartbeat();
+    if (!heartbeat) return Infinity;
+
+    const now = Math.floor(Date.now() / 1000);
+    return now - heartbeat;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Safe Mode Functions (latching - requires manual exit)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SAFE_MODE_KEY = 'safe_mode';
+const SAFE_MODE_REASON_KEY = 'safe_mode_reason';
+const RPC_ERROR_COUNT_KEY = 'consecutive_rpc_errors';
+
+/**
+ * Enter safe mode (latches until manual exit).
+ */
+export function enterSafeMode(reason: string): void {
+    const db = getDb();
+    const now = Math.floor(Date.now() / 1000);
+
+    db.prepare(`
+        INSERT INTO bot_state (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(SAFE_MODE_KEY, now.toString());
+
+    db.prepare(`
+        INSERT INTO bot_state (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(SAFE_MODE_REASON_KEY, reason);
+
+    console.log(`[SAFE-MODE] ⚠️ ENTERED SAFE MODE: ${reason}`);
+    console.log(`[SAFE-MODE] Bot will NOT execute jobs until manually exited.`);
+    console.log(`[SAFE-MODE] Run with --exit-safe-mode to resume operations.`);
+}
+
+/**
+ * Exit safe mode (manual action required).
+ */
+export function exitSafeMode(): void {
+    const db = getDb();
+
+    db.prepare('DELETE FROM bot_state WHERE key = ?').run(SAFE_MODE_KEY);
+    db.prepare('DELETE FROM bot_state WHERE key = ?').run(SAFE_MODE_REASON_KEY);
+    db.prepare('DELETE FROM bot_state WHERE key = ?').run(RPC_ERROR_COUNT_KEY);
+
+    console.log(`[SAFE-MODE] ✅ Exited safe mode. Operations resumed.`);
+}
+
+/**
+ * Check if bot is in safe mode.
+ */
+export function isSafeMode(): boolean {
+    const db = getDb();
+    const row = db.prepare('SELECT value FROM bot_state WHERE key = ?')
+        .get(SAFE_MODE_KEY) as { value: string } | undefined;
+
+    return row !== undefined;
+}
+
+/**
+ * Get safe mode reason if in safe mode.
+ */
+export function getSafeModeReason(): string | null {
+    const db = getDb();
+    const row = db.prepare('SELECT value FROM bot_state WHERE key = ?')
+        .get(SAFE_MODE_REASON_KEY) as { value: string } | undefined;
+
+    return row?.value ?? null;
+}
+
+/**
+ * Increment consecutive RPC error counter.
+ * Returns the new count.
+ */
+export function incrementRpcErrors(): number {
+    const db = getDb();
+    const current = getRpcErrorCount();
+    const newCount = current + 1;
+
+    db.prepare(`
+        INSERT INTO bot_state (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(RPC_ERROR_COUNT_KEY, newCount.toString());
+
+    return newCount;
+}
+
+/**
+ * Reset RPC error counter (on successful operation).
+ */
+export function resetRpcErrors(): void {
+    const db = getDb();
+    db.prepare('DELETE FROM bot_state WHERE key = ?').run(RPC_ERROR_COUNT_KEY);
+}
+
+/**
+ * Get current RPC error count.
+ */
+export function getRpcErrorCount(): number {
+    const db = getDb();
+    const row = db.prepare('SELECT value FROM bot_state WHERE key = ?')
+        .get(RPC_ERROR_COUNT_KEY) as { value: string } | undefined;
+
+    return row ? parseInt(row.value, 10) : 0;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Holder Queries
 // ─────────────────────────────────────────────────────────────────────────────

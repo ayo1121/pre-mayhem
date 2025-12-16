@@ -1,22 +1,24 @@
-import { Connection } from '@solana/web3.js';
+import { Connection, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { getAccount, getAssociatedTokenAddress } from '@solana/spl-token';
 import * as cron from 'node-cron';
 import * as fs from 'fs';
 import * as path from 'path';
-import { getConfig, Config } from './config';
+import { getConfig, Config } from './config.js';
 import {
     initDb,
     closeDb,
     getLastRound,
-    acquireLock,
-    releaseLock,
     clearStaleLocks,
     updateHeartbeat,
-    LockType,
-} from './db';
-import { bootstrapScan, incrementalScan } from './scan';
-import { executeBuyRound } from './buys';
-import { executeRewardRound } from './rewards';
-import { startStatusServer, stopStatusServer } from './status-server';
+    isSafeMode,
+    exitSafeMode,
+    getSafeModeReason,
+} from './db.js';
+import { bootstrapScan, incrementalScan } from './scan.js';
+import { executeBuyRound } from './buys.js';
+import { executeRewardRound } from './rewards.js';
+import { startStatusServer, stopStatusServer } from './status-server.js';
+import { executeWithLockAndTimeout } from './execution.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI Argument Parsing
@@ -26,6 +28,7 @@ interface CliArgs {
     bootstrap: boolean;
     onceBuy: boolean;
     onceReward: boolean;
+    exitSafeMode: boolean;
 }
 
 function parseArgs(): CliArgs {
@@ -35,6 +38,7 @@ function parseArgs(): CliArgs {
         bootstrap: args.includes('--bootstrap'),
         onceBuy: args.includes('--once-buy'),
         onceReward: args.includes('--once-reward'),
+        exitSafeMode: args.includes('--exit-safe-mode'),
     };
 }
 
@@ -44,25 +48,21 @@ function parseArgs(): CliArgs {
 
 function secondsToCron(seconds: number): string {
     if (seconds < 60) {
-        // Every N seconds (not practical for cron, use minimum 1 minute)
         return '* * * * *';
     }
 
     const minutes = Math.floor(seconds / 60);
 
     if (minutes < 60) {
-        // Every N minutes
         return `*/${minutes} * * * *`;
     }
 
     const hours = Math.floor(minutes / 60);
 
     if (hours < 24) {
-        // Every N hours
         return `0 */${hours} * * *`;
     }
 
-    // Daily
     return '0 0 * * *';
 }
 
@@ -71,35 +71,32 @@ function secondsToCron(seconds: number): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function maskRpcUrl(url: string): string {
-    // Mask API key in RPC URL for security
     return url.replace(/api-key=[^&]+/, 'api-key=****');
 }
 
 function printStartupBanner(config: Config): void {
     console.log('');
     console.log('═══════════════════════════════════════════════════════════════');
-    console.log('  PUMPFUN AGE STREAK BOT - PRODUCTION');
+    console.log('  PRE-MAYHEM BOT - PRODUCTION');
     console.log('═══════════════════════════════════════════════════════════════');
     console.log('');
     console.log('  Configuration:');
     console.log(`    RPC URL:              ${maskRpcUrl(config.rpcUrl)}`);
     console.log(`    Token Mint:           ${config.tokenMint.toBase58()}`);
     console.log(`    Treasury:             ${config.treasuryPubkey.toBase58()}`);
-    console.log(`    Buy Interval:         ${config.buyIntervalSeconds}s (${config.buyIntervalSeconds / 3600}h)`);
-    console.log(`    Reward Interval:      ${config.rewardIntervalSeconds}s (${config.rewardIntervalSeconds / 3600}h)`);
+    console.log(`    Buy Interval:         ${config.buyIntervalSeconds}s`);
+    console.log(`    Reward Interval:      ${config.rewardIntervalSeconds}s`);
+    console.log(`    Buy Timeout:          ${config.buyJobTimeoutMs / 1000}s`);
+    console.log(`    Reward Timeout:       ${config.rewardJobTimeoutMs / 1000}s`);
+    console.log(`    Min SOL Reserve:      ${config.minSolReserve} SOL`);
+    console.log(`    Min Reward Tokens:    ${config.minRewardTokens}`);
     console.log(`    Status Server:        http://localhost:${config.statusServerPort}/status`);
     console.log(`    Dry Run:              ${config.dryRun}`);
     console.log('');
 
     if (!config.dryRun) {
-        console.log('');
         console.log('  ╔═══════════════════════════════════════════════════════════╗');
-        console.log('  ║                                                           ║');
-        console.log('  ║   ⚠️  WARNING: DRY_RUN IS DISABLED!                        ║');
-        console.log('  ║                                                           ║');
-        console.log('  ║   This bot will execute REAL transactions with REAL SOL.  ║');
-        console.log('  ║   Make sure you have tested thoroughly before deploying.  ║');
-        console.log('  ║                                                           ║');
+        console.log('  ║   ⚠️  WARNING: DRY_RUN IS DISABLED - REAL TRANSACTIONS!   ║');
         console.log('  ╚═══════════════════════════════════════════════════════════╝');
         console.log('');
     }
@@ -122,7 +119,26 @@ function ensureDirectories(): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Job Timing Guards (Prevent Double Execution After Restart)
+// Treasury Balance Checks
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function getTreasurySolBalance(connection: Connection, config: Config): Promise<number> {
+    const balance = await connection.getBalance(config.treasuryPubkey);
+    return balance / LAMPORTS_PER_SOL;
+}
+
+async function getTreasuryTokenBalance(connection: Connection, config: Config): Promise<bigint> {
+    try {
+        const ata = await getAssociatedTokenAddress(config.tokenMint, config.treasuryPubkey);
+        const account = await getAccount(connection, ata);
+        return account.amount;
+    } catch {
+        return BigInt(0);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Job Timing Guards
 // ─────────────────────────────────────────────────────────────────────────────
 
 function shouldRunBuyJob(config: Config): boolean {
@@ -160,32 +176,6 @@ function shouldRunRewardJob(config: Config): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Crash-Safe Job Execution with Locks
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function executeWithLock<T>(
-    lockType: LockType,
-    jobName: string,
-    jobFn: () => Promise<T>
-): Promise<T | null> {
-    // Try to acquire lock
-    if (!acquireLock(lockType)) {
-        console.log(`[${jobName}] Lock held, skipping execution`);
-        return null;
-    }
-
-    try {
-        return await jobFn();
-    } catch (err) {
-        console.error(`[${jobName}] Job error:`, err);
-        throw err;
-    } finally {
-        // Always release lock
-        releaseLock(lockType);
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Graceful Shutdown Handler
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -203,22 +193,13 @@ async function gracefulShutdown(signal: string): Promise<void> {
     console.log('');
     console.log(`[SHUTDOWN] Received ${signal}, starting graceful shutdown...`);
 
-    // Stop heartbeat
     if (heartbeatInterval) {
         clearInterval(heartbeatInterval);
         heartbeatInterval = null;
     }
 
-    // Stop status server
     stopStatusServer();
 
-    // Release any locks we might hold
-    try {
-        releaseLock('buy_job');
-        releaseLock('reward_job');
-    } catch { }
-
-    // Wait for in-progress scan to complete (max 30 seconds)
     const maxWait = 30000;
     const startTime = Date.now();
 
@@ -227,13 +208,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
         await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
-    // Close database
     console.log('[SHUTDOWN] Closing database...');
     closeDb();
 
-    // Flush stdout/stderr
     console.log('[SHUTDOWN] Shutdown complete.');
-
     process.exit(0);
 }
 
@@ -242,13 +220,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-    // Ensure required directories exist
     ensureDirectories();
 
-    // Parse CLI arguments
     const args = parseArgs();
 
-    // Load configuration
     let config: Config;
     try {
         config = getConfig();
@@ -257,10 +232,8 @@ async function main(): Promise<void> {
         process.exit(1);
     }
 
-    // Print startup banner
     printStartupBanner(config);
 
-    // Initialize database
     try {
         initDb();
         console.log('[INIT] Database initialized');
@@ -269,16 +242,40 @@ async function main(): Promise<void> {
         process.exit(1);
     }
 
-    // Clear stale locks on startup (2× interval)
+    // Handle --exit-safe-mode CLI flag
+    if (args.exitSafeMode) {
+        if (isSafeMode()) {
+            const reason = getSafeModeReason();
+            console.log(`[SAFE-MODE] Was in safe mode due to: ${reason}`);
+            exitSafeMode();
+            console.log('[SAFE-MODE] Safe mode exited. You can now restart the bot.');
+        } else {
+            console.log('[SAFE-MODE] Bot is not in safe mode.');
+        }
+        closeDb();
+        return;
+    }
+
+    // Check if in safe mode
+    if (isSafeMode()) {
+        const reason = getSafeModeReason();
+        console.log('');
+        console.log('  ╔═══════════════════════════════════════════════════════════╗');
+        console.log('  ║   🛑 BOT IS IN SAFE MODE - JOBS WILL NOT EXECUTE          ║');
+        console.log('  ╚═══════════════════════════════════════════════════════════╝');
+        console.log(`  Reason: ${reason}`);
+        console.log('  To exit safe mode, run: npm run start -- --exit-safe-mode');
+        console.log('');
+    }
+
+    // Clear stale locks on startup
     const maxLockAge = Math.max(config.buyIntervalSeconds, config.rewardIntervalSeconds) * 2;
     console.log(`[INIT] Clearing stale locks older than ${maxLockAge}s...`);
     clearStaleLocks(maxLockAge);
 
-    // Create connection
     const connection = new Connection(config.rpcUrl, 'confirmed');
 
     try {
-        // Test connection
         const slot = await connection.getSlot();
         console.log(`[INIT] Connected to RPC (slot: ${slot})`);
     } catch (err) {
@@ -300,68 +297,85 @@ async function main(): Promise<void> {
 
     if (args.onceBuy) {
         console.log('\n[MODE] One-time buy job');
-        const result = await executeWithLock('buy_job', 'BUY', () => executeBuyRound(connection));
-        if (result) {
-            console.log('[MODE] Buy job result:', JSON.stringify(result, null, 2));
+
+        // Check SOL balance first
+        const solBalance = await getTreasurySolBalance(connection, config);
+        if (solBalance < config.minSolReserve) {
+            console.log(`[BUY] ⚠️ SKIPPED - SOL balance (${solBalance.toFixed(4)}) < reserve (${config.minSolReserve})`);
+            closeDb();
+            return;
         }
+
+        const result = await executeWithLockAndTimeout(
+            'buy_job',
+            'BUY',
+            config.buyJobTimeoutMs,
+            async () => executeBuyRound(connection)
+        );
+
+        if (result.success && result.result) {
+            console.log('[MODE] Buy job result:', JSON.stringify(result.result, null, 2));
+        }
+
         closeDb();
         return;
     }
 
     if (args.onceReward) {
         console.log('\n[MODE] One-time reward job');
-        const result = await executeWithLock('reward_job', 'REWARD', () => executeRewardRound(connection));
-        if (result) {
+
+        // Check token balance first
+        const tokenBalance = await getTreasuryTokenBalance(connection, config);
+        if (tokenBalance < BigInt(config.minRewardTokens)) {
+            console.log(`[REWARD] ⚠️ SKIPPED - Token balance (${tokenBalance}) < minimum (${config.minRewardTokens})`);
+            closeDb();
+            return;
+        }
+
+        const result = await executeWithLockAndTimeout(
+            'reward_job',
+            'REWARD',
+            config.rewardJobTimeoutMs,
+            async () => executeRewardRound(connection)
+        );
+
+        if (result.success && result.result) {
             console.log('[MODE] Reward job result:', {
-                roundId: result.roundId,
-                winnersCount: result.winners.length,
-                totalDistributed: result.totalDistributed.toString(),
-                success: result.success,
-                error: result.error,
+                roundId: result.result.roundId,
+                winnersCount: result.result.winners.length,
+                totalDistributed: result.result.totalDistributed.toString(),
+                success: result.result.success,
             });
         }
+
         closeDb();
         return;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Register shutdown handlers BEFORE starting jobs
+    // Continuous mode
     // ─────────────────────────────────────────────────────────────────────────
 
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Start heartbeat (every 30 seconds)
-    // ─────────────────────────────────────────────────────────────────────────
-
     console.log('[INIT] Starting heartbeat...');
-    updateHeartbeat(); // Initial heartbeat
+    updateHeartbeat();
     heartbeatInterval = setInterval(() => {
         updateHeartbeat();
     }, 30000);
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Start status server
-    // ─────────────────────────────────────────────────────────────────────────
-
     console.log('[INIT] Starting status server...');
     startStatusServer();
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Continuous mode with scheduled jobs
-    // ─────────────────────────────────────────────────────────────────────────
-
     console.log('\n[MODE] Continuous operation');
-    console.log(`[SCHEDULE] Buy job: every ${config.buyIntervalSeconds} seconds`);
-    console.log(`[SCHEDULE] Reward job: every ${config.rewardIntervalSeconds} seconds`);
+    console.log(`[SCHEDULE] Buy job: every ${config.buyIntervalSeconds}s (timeout: ${config.buyJobTimeoutMs / 1000}s)`);
+    console.log(`[SCHEDULE] Reward job: every ${config.rewardIntervalSeconds}s (timeout: ${config.rewardJobTimeoutMs / 1000}s)`);
 
-    // Check timing guards for initial state
     console.log('\n[GUARD] Checking last job timestamps...');
     shouldRunBuyJob(config);
     shouldRunRewardJob(config);
 
-    // Initial scan
     console.log('\n[INIT] Running initial scan...');
     scanJobRunning = true;
     try {
@@ -370,7 +384,6 @@ async function main(): Promise<void> {
         scanJobRunning = false;
     }
 
-    // Convert intervals to cron expressions
     const buyCron = secondsToCron(config.buyIntervalSeconds);
     const rewardCron = secondsToCron(config.rewardIntervalSeconds);
 
@@ -381,7 +394,6 @@ async function main(): Promise<void> {
     cron.schedule(buyCron, async () => {
         if (isShuttingDown) return;
 
-        // Check timing guard
         if (!shouldRunBuyJob(config)) {
             console.log('[BUY] Interval not elapsed, skipping');
             return;
@@ -390,18 +402,30 @@ async function main(): Promise<void> {
         console.log('\n[BUY] ─────────────────────────────────────────');
         console.log(`[BUY] Starting job at ${new Date().toISOString()}`);
 
+        // Check SOL balance
         try {
-            await executeWithLock('buy_job', 'BUY', () => executeBuyRound(connection));
+            const solBalance = await getTreasurySolBalance(connection, config);
+            if (solBalance < config.minSolReserve) {
+                console.log(`[BUY] ⚠️ SKIPPED - SOL balance (${solBalance.toFixed(4)}) < reserve (${config.minSolReserve})`);
+                return;
+            }
         } catch (err) {
-            console.error('[BUY] Job error:', err);
+            console.error('[BUY] Failed to check SOL balance:', err);
+            return;
         }
+
+        await executeWithLockAndTimeout(
+            'buy_job',
+            'BUY',
+            config.buyJobTimeoutMs,
+            async () => executeBuyRound(connection)
+        );
     });
 
     // Schedule reward job
     cron.schedule(rewardCron, async () => {
         if (isShuttingDown) return;
 
-        // Check timing guard
         if (!shouldRunRewardJob(config)) {
             console.log('[REWARD] Interval not elapsed, skipping');
             return;
@@ -410,14 +434,27 @@ async function main(): Promise<void> {
         console.log('\n[REWARD] ─────────────────────────────────────────');
         console.log(`[REWARD] Starting job at ${new Date().toISOString()}`);
 
+        // Check token balance
         try {
-            await executeWithLock('reward_job', 'REWARD', () => executeRewardRound(connection));
+            const tokenBalance = await getTreasuryTokenBalance(connection, config);
+            if (tokenBalance < BigInt(config.minRewardTokens)) {
+                console.log(`[REWARD] ⚠️ SKIPPED - Token balance (${tokenBalance}) < minimum (${config.minRewardTokens})`);
+                return;
+            }
         } catch (err) {
-            console.error('[REWARD] Job error:', err);
+            console.error('[REWARD] Failed to check token balance:', err);
+            return;
         }
+
+        await executeWithLockAndTimeout(
+            'reward_job',
+            'REWARD',
+            config.rewardJobTimeoutMs,
+            async () => executeRewardRound(connection)
+        );
     });
 
-    // Schedule periodic scan (every 10 minutes)
+    // Schedule periodic scan
     cron.schedule('*/10 * * * *', async () => {
         if (isShuttingDown) return;
         if (scanJobRunning) {
@@ -447,7 +484,6 @@ async function main(): Promise<void> {
     console.log('');
 }
 
-// Run main
 main().catch(err => {
     console.error('Fatal error:', err);
     closeDb();

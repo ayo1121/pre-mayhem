@@ -124,6 +124,13 @@ export interface Config {
     statusServerPort: number;
     statusAllowedOrigin: string;
 
+    // Safety rails
+    minSolReserve: number;
+    minRewardTokens: number;
+    maxRpcErrorsBeforePause: number;
+    buyJobTimeoutMs: number;
+    rewardJobTimeoutMs: number;
+
     // Paths
     dbPath: string;
     publicDir: string;
@@ -192,6 +199,13 @@ function buildConfig(): Config {
         // Status server
         statusServerPort: parseIntEnv('STATUS_SERVER_PORT', 3001),
         statusAllowedOrigin: optionalEnv('STATUS_ALLOWED_ORIGIN', '*'),
+
+        // Safety rails
+        minSolReserve: parseFloatEnv('MIN_SOL_RESERVE', 0.05),
+        minRewardTokens: parseIntEnv('MIN_REWARD_TOKENS', 1000),
+        maxRpcErrorsBeforePause: parseIntEnv('MAX_RPC_ERRORS_BEFORE_PAUSE', 5),
+        buyJobTimeoutMs: parseIntEnv('BUY_JOB_TIMEOUT_MS', 120000),
+        rewardJobTimeoutMs: parseIntEnv('REWARD_JOB_TIMEOUT_MS', 180000),
 
         // Paths
         dbPath: path.join(process.cwd(), 'data', 'bot.db'),
