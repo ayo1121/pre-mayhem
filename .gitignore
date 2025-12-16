@@ -1,0 +1,61 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# PUMPFUN AGE STREAK BOT - .gitignore
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECRETS - NEVER COMMIT THESE!
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Environment variables (contains API keys, config)
+.env
+.env.local
+.env.production
+
+# Treasury keypair (contains private key!)
+treasury.json
+*.keypair.json
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RUNTIME DATA
+# ─────────────────────────────────────────────────────────────────────────────
+
+# SQLite database
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Application logs
+logs/
+*.log
+
+# Public transparency logs (runtime generated)
+public/last_buy.json
+public/last_reward.json
+public/history.jsonl
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BUILD & DEPENDENCIES
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Build output
+dist/
+
+# Node modules
+node_modules/
+
+# Next.js (frontend)
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OS & IDE
+# ─────────────────────────────────────────────────────────────────────────────
+
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
