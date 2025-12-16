@@ -1,10 +1,26 @@
+# Secrets - NEVER include
 .env
 .env.local
 .env.production
 treasury.json
 *.keypair.json
+
+# Runtime data
 data/
 logs/
+
+# Build artifacts (will be rebuilt)
 node_modules/
+dist/
+
+# Frontend (not needed for bot container)
 .next/
 out/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/

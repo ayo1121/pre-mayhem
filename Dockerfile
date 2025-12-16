@@ -7,8 +7,12 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+# Pin npm to known stable version
+RUN npm i -g npm@10.8.2
+RUN npm --version && node --version
+
+# Copy package files explicitly (lockfile required for npm ci)
+COPY package.json package-lock.json ./
 
 # Install all dependencies (including dev for build)
 RUN npm ci
@@ -28,8 +32,12 @@ FROM node:20-alpine AS production
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+# Pin npm to known stable version
+RUN npm i -g npm@10.8.2
+RUN npm --version && node --version
+
+# Copy package files explicitly
+COPY package.json package-lock.json ./
 
 # Install production dependencies only
 RUN npm ci --omit=dev
