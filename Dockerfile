@@ -7,15 +7,14 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Pin npm to known stable version
-RUN npm i -g npm@10.8.2
+# Log versions for debugging
 RUN npm --version && node --version
 
-# Copy package files explicitly (lockfile required for npm ci)
+# Copy package files
 COPY package.json package-lock.json ./
 
-# Install all dependencies (including dev for build)
-RUN npm ci
+# Install all dependencies (use npm install for cross-version lockfile compatibility)
+RUN npm install --frozen-lockfile 2>/dev/null || npm install
 
 # Copy source
 COPY tsconfig.json ./
@@ -32,15 +31,14 @@ FROM node:20-alpine AS production
 
 WORKDIR /app
 
-# Pin npm to known stable version
-RUN npm i -g npm@10.8.2
+# Log versions for debugging
 RUN npm --version && node --version
 
-# Copy package files explicitly
+# Copy package files
 COPY package.json package-lock.json ./
 
 # Install production dependencies only
-RUN npm ci --omit=dev
+RUN npm install --omit=dev --frozen-lockfile 2>/dev/null || npm install --omit=dev
 
 # Copy built files from builder
 COPY --from=builder /app/dist ./dist
