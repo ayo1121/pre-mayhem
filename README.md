@@ -20,27 +20,147 @@ This software:
 
 | Risk | Description |
 |------|-------------|
-| **RPC Downtime** | If your RPC is unavailable, transactions may fail |
-| **Network Congestion** | Transactions may time out during high load |
-| **Slippage** | Market swaps may receive worse rates than expected |
-| **Key Compromise** | If your treasury key is stolen, funds are gone |
+| **RPC Downtime** | Transactions may fail if RPC unavailable |
+| **Network Congestion** | Transactions may time out |
+| **Slippage** | Market swaps may receive worse rates |
+| **Key Compromise** | If treasury key is stolen, funds are gone |
 | **Bot Bugs** | Software defects could cause incorrect behavior |
-| **Oracle Failures** | External API issues can affect operation |
-
-### What Users Should NOT Expect
-
-- ❌ Guaranteed returns
-- ❌ Perfect uptime
-- ❌ Recovery of lost funds
-- ❌ Customer support
-- ❌ Refunds for any reason
 
 ### Why Timers May Pause
 
 - Bot enters **safe mode** after repeated RPC errors
 - Treasury balance falls below safety reserve
-- Manual intervention is required
-- Bot process is stopped or crashed
+- Manual intervention required
+- Bot process stopped or crashed
+
+---
+
+## 🚀 Launch Checklist
+
+**Follow this exact order. Do not skip steps.**
+
+| Step | Action | Verify |
+|------|--------|--------|
+| 1 | Deploy bot (Railway or VPS) | Bot logs show "BOT IS RUNNING" |
+| 2 | Verify `/status` endpoint live | `curl https://your-api-domain/status` returns JSON |
+| 3 | Deploy frontend to Vercel | Frontend shows "Connecting..." → "Online" |
+| 4 | Verify timers move | Countdown decreases each second |
+| 5 | Fund treasury (SMALL amount) | 0.1 SOL + 10,000 tokens max |
+| 6 | Run dry-run test jobs | `npm run once:buy` and `npm run once:reward` |
+| 7 | Flip `DRY_RUN=false` | Update env in Railway/VPS |
+| 8 | Restart service | Railway: redeploy. VPS: `pm2 restart` |
+| 9 | Watch first real buy | Check Solscan for tx |
+| 10 | Announce publicly | Only after step 9 succeeds |
+
+> ⚠️ **NEVER** flip `DRY_RUN=false` before frontend timers work  
+> ⚠️ **NEVER** fund treasury heavily before first live buy succeeds
+
+---
+
+## Deployment Options
+
+### Option 1: Railway (Recommended)
+
+Railway provides managed hosting with automatic restarts, built-in logs, and stable public domains.
+
+#### Step 1: Create Railway Project
+
+1. Go to [railway.app](https://railway.app) and create account
+2. New Project → Deploy from GitHub repo
+3. Select `ayo1121/pre-mayhem`
+
+#### Step 2: Add Volume for Treasury Key
+
+1. In Railway dashboard → Add Volume
+2. Mount path: `/app/treasury.json`
+3. Open shell and upload your keypair:
+   ```bash
+   cat > /app/treasury.json << 'EOF'
+   [your 64-byte array here]
+   EOF
+   chmod 600 /app/treasury.json
+   ```
+
+#### Step 3: Set Environment Variables
+
+In Railway dashboard → Variables:
+
+```env
+RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+HELIUS_API_KEY=YOUR_KEY
+TOKEN_MINT=YOUR_TOKEN_MINT_ADDRESS
+TREASURY_KEYPAIR_PATH=/app/treasury.json
+DRY_RUN=true
+STATUS_SERVER_PORT=3001
+STATUS_ALLOWED_ORIGIN=https://your-frontend.vercel.app
+MIN_SOL_RESERVE=0.05
+MIN_REWARD_TOKENS=1000
+MAX_BUY_SOL_PER_HOUR=0.2
+```
+
+#### Step 4: Deploy & Get Status URL
+
+1. Railway will build and deploy automatically
+2. Go to Settings → Networking → Generate Domain
+3. Your status API will be at: `https://your-app.railway.app/status`
+
+---
+
+### Option 2: VPS (Fallback)
+
+For self-managed servers with PM2.
+
+```bash
+# Clone and install
+git clone https://github.com/ayo1121/pre-mayhem.git
+cd pre-mayhem
+npm install
+
+# Create keypair
+solana-keygen new -o treasury.json
+chmod 600 treasury.json
+
+# Configure
+cp .env.example .env
+nano .env  # Fill in values
+
+# Build and run
+npm run build
+npm run bootstrap
+npm run pm2:start
+pm2 save && pm2 startup
+```
+
+Expose status API via Nginx:
+```nginx
+server {
+    listen 80;
+    server_name api.yourdomain.com;
+    location /status {
+        proxy_pass http://127.0.0.1:3001/status;
+    }
+}
+```
+
+---
+
+## Frontend Deployment
+
+### Deploy Your Own Frontend
+
+1. Fork this repo
+2. Import `frontend/` to Vercel
+3. Set environment variable:
+   ```
+   NEXT_PUBLIC_STATUS_API_URL=https://your-api-domain.railway.app/status
+   ```
+4. Deploy
+
+The frontend:
+- Reads **only** `NEXT_PUBLIC_STATUS_API_URL`
+- Has **no build-time coupling** to the bot
+- Shows **"Offline"** if API unreachable
+- Shows **"Safe Mode"** if bot paused
 
 ---
 
@@ -48,171 +168,42 @@ This software:
 
 **Don't trust, verify.** All transactions are publicly visible.
 
-### 1. Find the Treasury Address
-
-Check the bot logs or status API for the treasury public key.
-
-### 2. View on Solscan
-
-```
-https://solscan.io/account/YOUR_TREASURY_ADDRESS
-```
-
-### 3. Verify Transaction Signatures
-
-The status API returns `lastBuyTx` and `lastRewardTxs`. Check each signature on Solscan to confirm:
-- Transaction was successful
-- Correct amounts were transferred
-- Recipients match expected wallets
+1. Find treasury address in bot logs or `/status` response
+2. View on Solscan: `https://solscan.io/account/TREASURY_ADDRESS`
+3. Check `lastBuyTx` and `lastRewardTxs` from status API
+4. Verify each transaction succeeded
 
 ---
 
-## What It Does
+## Status API
 
+The status API is the **only integration point** for the frontend.
+
+**Endpoint:** `GET /status`
+
+**Response:**
+```json
+{
+  "now": 1702654321,
+  "sourceOfTruth": "server",
+  "checksum": "a1b2c3d4e5f6...",
+  "botOnline": true,
+  "heartbeatAgeSeconds": 15,
+  "safeMode": false,
+  "safeModeReason": null,
+  "dryRun": true,
+  "lastBuyTs": 1702650721,
+  "lastRewardTs": 1702647121,
+  "nextBuyTs": 1702654321,
+  "nextRewardTs": 1702654321,
+  "buyIntervalSeconds": 3600,
+  "rewardIntervalSeconds": 7200,
+  "buyInProgress": false,
+  "rewardInProgress": false,
+  "lastBuyTx": "5abc...",
+  "lastRewardTxs": ["5xyz..."]
+}
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            HOURLY BUY JOB                                   │
-│  Treasury SOL → Jupiter Swap → Token                                       │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         BI-HOURLY REWARD JOB                                │
-│  Eligible Holders → Weighted Lottery → Winners → Token Distribution        │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Eligibility Requirements
-
-| Requirement | Default | Why |
-|-------------|---------|-----|
-| Wallet Age | 90 days | Prevents new wallet farming |
-| Holding Continuity | 2 hours | Excludes quick flippers |
-| Cumulative Buys | 0.1 SOL | Excludes airdrop recipients |
-| Non-zero Balance | Required | Must hold tokens |
-
----
-
-## Safety Features
-
-### Execution Safety
-
-- **DB-backed locks**: Prevents double execution
-- **Timeouts**: Buy (120s), Reward (180s) max execution
-- **Guaranteed cleanup**: Locks always released in `finally` block
-- **Finality verification**: Rounds only recorded after tx confirmed
-
-### Treasury Rails
-
-- **MIN_SOL_RESERVE**: Skip buy if balance too low
-- **MIN_REWARD_TOKENS**: Skip reward if balance too low
-- **Safe Mode**: Auto-pause after repeated RPC errors
-- **Manual Exit Required**: Run `--exit-safe-mode` to resume
-
-### Status API
-
-- **Rate limited**: 30 requests/minute per IP
-- **Strict CORS**: Exact origin match only
-- **Checksum**: SHA256 hash of critical fields
-- **Read-only**: No write operations, no secrets
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- Node.js 20+
-- Helius API key ([helius.dev](https://helius.dev))
-- Funded Solana wallet
-
-### 1. Clone & Install
-
-```bash
-git clone https://github.com/YOUR_USERNAME/pre-mayhem.git
-cd pre-mayhem
-npm install
-```
-
-### 2. Create Treasury Wallet
-
-```bash
-solana-keygen new -o treasury.json
-chmod 600 treasury.json
-```
-
-### 3. Configure
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-**Required variables:**
-```env
-RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
-HELIUS_API_KEY=YOUR_KEY
-TOKEN_MINT=YOUR_TOKEN_MINT_ADDRESS
-TREASURY_KEYPAIR_PATH=/absolute/path/to/treasury.json
-DRY_RUN=true
-```
-
-### 4. Build & Test
-
-```bash
-npm run build
-npm run bootstrap    # Fetch historical data
-npm run once:buy     # Test buy (dry run)
-npm run once:reward  # Test reward (dry run)
-```
-
-### 5. Production (PM2)
-
-```bash
-npm install -g pm2
-npm run pm2:start
-pm2 save && pm2 startup
-```
-
----
-
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `npm run build` | Compile TypeScript |
-| `npm run start` | Run bot (production) |
-| `npm run bootstrap` | Fetch historical data |
-| `npm run once:buy` | Single buy job |
-| `npm run once:reward` | Single reward job |
-| `npm run start -- --exit-safe-mode` | Exit safe mode |
-| `npm run pm2:start` | Start with PM2 |
-| `npm run pm2:logs` | View logs |
-
----
-
-## Frontend Deployment
-
-### Vercel
-
-1. Fork/clone this repo
-2. Import to Vercel dashboard
-3. Set environment variable:
-   ```
-   NEXT_PUBLIC_STATUS_API_URL=https://api.yourdomain.com/status
-   ```
-4. Deploy
-
-### Timer Accuracy
-
-Timers use **server time**, not client time:
-
-```typescript
-estimatedServerNow = serverTimeAtFetch + elapsedSinceFetch
-countdown = max(0, nextTs - estimatedServerNow)
-```
-
-Even if a user's clock is wrong, the timer is accurate.
 
 ---
 
@@ -230,25 +221,37 @@ Even if a user's clock is wrong, the timer is accurate.
 | `MAX_RPC_ERRORS_BEFORE_PAUSE` | - | `5` | Error threshold |
 | `BUY_JOB_TIMEOUT_MS` | - | `120000` | Buy timeout |
 | `REWARD_JOB_TIMEOUT_MS` | - | `180000` | Reward timeout |
+| `STATUS_ALLOWED_ORIGIN` | - | `*` | CORS origin |
 
 See `.env.example` for all options.
+
+---
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `npm run build` | Compile TypeScript |
+| `npm run start` | Run bot |
+| `npm run bootstrap` | Fetch historical data |
+| `npm run once:buy` | Single buy job |
+| `npm run once:reward` | Single reward job |
+| `npm run start -- --exit-safe-mode` | Exit safe mode |
 
 ---
 
 ## Security
 
 ### NEVER Commit
+- `.env`
+- `treasury.json`
+- `data/`
+- `logs/`
 
-- `.env` (API keys, config)
-- `treasury.json` (private key)
-- `data/` (database)
-- `logs/` (runtime logs)
-
-### Secure Your Keypair
-
-```bash
-chmod 600 treasury.json
-```
+### Treasury Key on Railway
+- Must be mounted as volume at `/app/treasury.json`
+- Never store in env variables
+- Never commit to repo
 
 ---
 

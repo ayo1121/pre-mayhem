@@ -1,0 +1,17 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "node dist/index.js"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+# No health check endpoint (bot is not an HTTP server, status API is secondary)
+# healthcheckPath = "/status"
+# healthcheckTimeout = 10
+
+[[ports]]
+protocol = "tcp"
+external = 3001
+internal = 3001

@@ -1,0 +1,10 @@
+.env
+.env.local
+.env.production
+treasury.json
+*.keypair.json
+data/
+logs/
+node_modules/
+.next/
+out/

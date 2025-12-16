@@ -248,8 +248,8 @@ export function startStatusServer(): void {
         }
     });
 
-    server.listen(port, () => {
-        console.log(`[STATUS] Server listening on port ${port}`);
+    server.listen(port, '0.0.0.0', () => {
+        console.log(`[STATUS] Server listening on 0.0.0.0:${port}`);
         console.log(`[STATUS] Allowed origin: ${allowedOrigin}`);
         console.log(`[STATUS] Rate limit: ${RATE_LIMIT_MAX_REQUESTS} req/min per IP`);
     });
