@@ -1,4 +1,4 @@
-# Pump.fun Age Streak Bot
+# Pre-mayhem
 
 An open-source Solana rewards bot for pump.fun tokens (or any SPL token) with automated buys and weighted lottery rewards for long-term holders.
 
@@ -59,7 +59,7 @@ This bot is **generic** — configure it for any SPL or pump.fun token by settin
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/pumpfun-age-streak-bot.git
+git clone https://github.com/YOUR_USERNAME/pre-mayhem.git
 cd pumpfun-age-streak-bot
 npm install
 ```

@@ -1,7 +1,7 @@
 module.exports = {
     apps: [
         {
-            name: "pumpfun-age-streak-bot",
+            name: "pre-mayhem",
             script: "dist/index.js",
             instances: 1,
             autorestart: true,
