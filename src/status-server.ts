@@ -51,7 +51,7 @@ export interface StatusResponse {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
-const RATE_LIMIT_MAX_REQUESTS = 30; // 30 requests per minute
+const RATE_LIMIT_MAX_REQUESTS = 120; // 120 requests per minute (increased for proxy environments)
 
 interface RateLimitEntry {
     count: number;
@@ -186,8 +186,9 @@ export function startStatusServer(): void {
     const allowedOrigin = config.statusAllowedOrigin;
 
     server = http.createServer((req, res) => {
-        // Get client IP
-        const ip = req.socket.remoteAddress || 'unknown';
+        // Get client IP (prefer X-Forwarded-For for proxy environments like Railway)
+        const forwarded = req.headers['x-forwarded-for'];
+        const ip = (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : req.socket.remoteAddress) || 'unknown';
 
         // Reject non-GET/OPTIONS methods immediately
         if (req.method !== 'GET' && req.method !== 'OPTIONS') {
