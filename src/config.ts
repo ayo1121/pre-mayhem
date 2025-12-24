@@ -55,7 +55,7 @@ function parseBoolEnv(name: string, defaultValue: boolean): boolean {
 // Load Treasury Keypair
 // ─────────────────────────────────────────────────────────────────────────────
 
-function loadKeypair(filePath: string): Keypair {
+function loadKeypairFromFile(filePath: string): Keypair {
     if (!fs.existsSync(filePath)) {
         throw new Error(`Treasury keypair file not found: ${filePath}`);
     }
@@ -72,6 +72,38 @@ function loadKeypair(filePath: string): Keypair {
     } catch (err) {
         throw new Error(`Failed to load keypair from ${filePath}: ${err}`);
     }
+}
+
+function loadKeypairFromEnv(envValue: string): Keypair {
+    try {
+        const secretKey = JSON.parse(envValue);
+
+        if (!Array.isArray(secretKey) || secretKey.length !== 64) {
+            throw new Error('Invalid keypair format: expected 64-byte array');
+        }
+
+        return Keypair.fromSecretKey(Uint8Array.from(secretKey));
+    } catch (err) {
+        throw new Error(`Failed to parse keypair from environment variable: ${err}`);
+    }
+}
+
+function loadKeypair(): Keypair {
+    // First, try to load from TREASURY_KEYPAIR_JSON environment variable (for Railway/cloud)
+    const keypairJson = process.env.TREASURY_KEYPAIR_JSON;
+    if (keypairJson && keypairJson.trim() !== '') {
+        console.log('[CONFIG] Loading treasury keypair from TREASURY_KEYPAIR_JSON environment variable');
+        return loadKeypairFromEnv(keypairJson);
+    }
+
+    // Fall back to file path if environment variable is not set
+    const keypairPath = process.env.TREASURY_KEYPAIR_PATH;
+    if (keypairPath && keypairPath.trim() !== '') {
+        console.log(`[CONFIG] Loading treasury keypair from file: ${keypairPath}`);
+        return loadKeypairFromFile(keypairPath);
+    }
+
+    throw new Error('Treasury keypair not configured. Set either TREASURY_KEYPAIR_JSON (recommended for cloud) or TREASURY_KEYPAIR_PATH environment variable.');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -144,7 +176,6 @@ function buildConfig(): Config {
     const rpcUrl = requireEnv('RPC_URL');
     const heliusApiKey = requireEnv('HELIUS_API_KEY');
     const tokenMintStr = requireEnv('TOKEN_MINT');
-    const keypairPath = requireEnv('TREASURY_KEYPAIR_PATH');
 
     // Validate token mint
     let tokenMint: PublicKey;
@@ -154,8 +185,8 @@ function buildConfig(): Config {
         throw new Error(`Invalid TOKEN_MINT address: ${tokenMintStr}`);
     }
 
-    // Load treasury keypair
-    const treasuryKeypair = loadKeypair(keypairPath);
+    // Load treasury keypair (from env var or file)
+    const treasuryKeypair = loadKeypair();
 
     // Parse safety caps with sensible defaults
     const rewardTokenPercentBps = parseIntEnv('REWARD_TOKEN_PERCENT_BPS', 9000);
