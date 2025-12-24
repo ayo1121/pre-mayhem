@@ -51,7 +51,7 @@ export interface StatusResponse {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
-const RATE_LIMIT_MAX_REQUESTS = 120; // 120 requests per minute (increased for proxy environments)
+const RATE_LIMIT_MAX_REQUESTS = 600; // 600 requests per minute (high limit to handle multiple browser tabs)
 
 interface RateLimitEntry {
     count: number;
