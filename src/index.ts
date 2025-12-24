@@ -129,13 +129,36 @@ async function getTreasurySolBalance(connection: Connection, config: Config): Pr
 
 async function getTreasuryTokenBalance(connection: Connection, config: Config): Promise<bigint> {
     try {
-        const ata = await getAssociatedTokenAddress(config.tokenMint, config.treasuryPubkey);
-        console.log(`[DEBUG] Looking for ATA: ${ata.toBase58()}`);
-        console.log(`[DEBUG] For treasury: ${config.treasuryPubkey.toBase58()}`);
+        console.log(`[DEBUG] Looking for token accounts for treasury: ${config.treasuryPubkey.toBase58()}`);
         console.log(`[DEBUG] Token mint: ${config.tokenMint.toBase58()}`);
-        const account = await getAccount(connection, ata);
-        console.log(`[DEBUG] Token balance found: ${account.amount}`);
-        return account.amount;
+
+        // Query ALL token accounts owned by treasury for this mint
+        const tokenAccounts = await connection.getTokenAccountsByOwner(
+            config.treasuryPubkey,
+            { mint: config.tokenMint }
+        );
+
+        console.log(`[DEBUG] Found ${tokenAccounts.value.length} token account(s)`);
+
+        if (tokenAccounts.value.length === 0) {
+            console.log('[DEBUG] No token accounts found for this mint');
+            return BigInt(0);
+        }
+
+        // Sum up balances from all token accounts (usually just one)
+        let totalBalance = BigInt(0);
+        for (const account of tokenAccounts.value) {
+            console.log(`[DEBUG] Token account: ${account.pubkey.toBase58()}`);
+            // Parse the account data to get the balance
+            // Token account data: first 64 bytes are mint (32) + owner (32), then 8 bytes for amount
+            const data = account.account.data;
+            const amount = data.readBigUInt64LE(64);
+            console.log(`[DEBUG] Account balance: ${amount}`);
+            totalBalance += amount;
+        }
+
+        console.log(`[DEBUG] Total token balance: ${totalBalance}`);
+        return totalBalance;
     } catch (err) {
         console.log(`[DEBUG] Error getting token balance: ${err}`);
         return BigInt(0);
