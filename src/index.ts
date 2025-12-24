@@ -130,9 +130,14 @@ async function getTreasurySolBalance(connection: Connection, config: Config): Pr
 async function getTreasuryTokenBalance(connection: Connection, config: Config): Promise<bigint> {
     try {
         const ata = await getAssociatedTokenAddress(config.tokenMint, config.treasuryPubkey);
+        console.log(`[DEBUG] Looking for ATA: ${ata.toBase58()}`);
+        console.log(`[DEBUG] For treasury: ${config.treasuryPubkey.toBase58()}`);
+        console.log(`[DEBUG] Token mint: ${config.tokenMint.toBase58()}`);
         const account = await getAccount(connection, ata);
+        console.log(`[DEBUG] Token balance found: ${account.amount}`);
         return account.amount;
-    } catch {
+    } catch (err) {
+        console.log(`[DEBUG] Error getting token balance: ${err}`);
         return BigInt(0);
     }
 }
