@@ -76,11 +76,17 @@ function loadKeypairFromFile(filePath: string): Keypair {
 
 function loadKeypairFromEnv(envValue: string): Keypair {
     try {
+        console.log(`[DEBUG] Raw env value length: ${envValue.length}`);
+        console.log(`[DEBUG] First 50 chars: ${envValue.substring(0, 50)}`);
         const secretKey = JSON.parse(envValue);
 
         if (!Array.isArray(secretKey) || secretKey.length !== 64) {
             throw new Error('Invalid keypair format: expected 64-byte array');
         }
+
+        console.log(`[DEBUG] Parsed array length: ${secretKey.length}`);
+        console.log(`[DEBUG] First 5 bytes: ${secretKey.slice(0, 5).join(',')}`);
+        console.log(`[DEBUG] Last 5 bytes: ${secretKey.slice(-5).join(',')}`);
 
         return Keypair.fromSecretKey(Uint8Array.from(secretKey));
     } catch (err) {
